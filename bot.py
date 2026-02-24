@@ -47,7 +47,7 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 async def generate_reply(message_content: str) -> str:
     response = gemini_client.models.generate_content(
-        model="gemini-1.5-flash",  # 無料枠が多いモデルに変更
+        model="gemini-2.0-flash-lite",  # 無料枠が多いモデルに変更
         config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
         contents=f"以下のメッセージに短く返信してください。\n\n「{message_content}」"
     )
