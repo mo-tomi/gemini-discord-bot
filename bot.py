@@ -1,5 +1,6 @@
 import discord
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import asyncio
 import os
 from datetime import datetime, timezone, timedelta
@@ -15,27 +16,27 @@ WATCH_CHANNEL_IDS = [
     1300764527109079071,
 ]
 
-intents = discord.Intents.default()
-intents.message_content = True
-intents.guilds = True
-
-client = discord.Client(intents=intents)
-
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
-    system_instruction="""あなたは「手帳持ちの集い」というDiscordサーバーのサポートBotです。
+SYSTEM_PROMPT = """あなたは「手帳持ちの集い」というDiscordサーバーのサポートBotです。
 以下のルールを必ず守ってください：
 ・返信は短く、1〜3文以内にまとめる
 ・どんなにネガティブな内容でも、ポジティブで中立な視点で返す
 ・共感を示しつつ、押しつけがましくならない
 ・断定や否定はせず、当たり障りのない温かい言葉を選ぶ
 ・絵文字は使わない"""
-)
+
+intents = discord.Intents.default()
+intents.message_content = True
+intents.guilds = True
+
+client = discord.Client(intents=intents)
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 async def generate_reply(message_content: str) -> str:
-    prompt = f"以下のメッセージに短く返信してください。\n\n「{message_content}」"
-    response = model.generate_content(prompt)
+    response = gemini_client.models.generate_content(
+        model="gemini-2.0-flash",
+        config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
+        contents=f"以下のメッセージに短く返信してください。\n\n「{message_content}」"
+    )
     return response.text
 
 async def check_unanswered_messages():
@@ -47,7 +48,6 @@ async def check_unanswered_messages():
         threshold_time = datetime.now(timezone.utc) - timedelta(hours=REPLY_THRESHOLD_HOURS)
 
         for channel in guild.text_channels:
-            # 対象チャンネル以外はスキップ
             if channel.id not in WATCH_CHANNEL_IDS:
                 continue
 
