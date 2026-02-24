@@ -1,6 +1,5 @@
 import discord
-from google import genai
-from google.genai import types
+from groq import Groq
 import asyncio
 import os
 from datetime import datetime, timezone, timedelta
@@ -8,11 +7,12 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
 DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 GUILD_ID = int(os.environ["GUILD_ID"])
 CHECK_INTERVAL = 3600
 REPLY_THRESHOLD_HOURS = 24
 
+# 返信するチャンネルIDのリスト（追加したい場合はカンマ区切りで増やす）
 WATCH_CHANNEL_IDS = [
     1300764527109079071,
 ]
@@ -25,7 +25,7 @@ SYSTEM_PROMPT = """あなたは「手帳持ちの集い」というDiscordサー
 ・断定や否定はせず、当たり障りのない温かい言葉を選ぶ
 ・絵文字は使わない"""
 
-# ヘルスチェック用サーバー（先に起動する）
+# ヘルスチェック用サーバー
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -43,15 +43,18 @@ intents.message_content = True
 intents.guilds = True
 
 client = discord.Client(intents=intents)
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+groq_client = Groq(api_key=GROQ_API_KEY)
 
 async def generate_reply(message_content: str) -> str:
-    response = gemini_client.models.generate_content(
-        model="gemini-2.0-flash-lite",  # 無料枠が多いモデルに変更
-        config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
-        contents=f"以下のメッセージに短く返信してください。\n\n「{message_content}」"
+    response = groq_client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": f"以下のメッセージに短く返信してください。\n\n「{message_content}」"}
+        ],
+        max_tokens=200,
     )
-    return response.text
+    return response.choices[0].message.content
 
 async def check_unanswered_messages():
     await client.wait_until_ready()
