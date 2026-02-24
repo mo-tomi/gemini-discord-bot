@@ -1,4 +1,4 @@
-himport discord
+import discord
 import google.generativeai as genai
 import asyncio
 import os
@@ -10,6 +10,11 @@ GUILD_ID = int(os.environ["GUILD_ID"])
 CHECK_INTERVAL = 3600
 REPLY_THRESHOLD_HOURS = 24
 
+# 返信するチャンネルIDのリスト（追加したい場合はカンマ区切りで増やす）
+WATCH_CHANNEL_IDS = [
+    1300764527109079071,
+]
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
@@ -18,16 +23,18 @@ client = discord.Client(intents=intents)
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel(
-        model_name="gemini-2.0-flash",
+    model_name="gemini-1.5-flash",
     system_instruction="""あなたは「手帳持ちの集い」というDiscordサーバーのサポートBotです。
-障害者手帳を持つ方々のコミュニティで、温かく寄り添う返信をしてください。
-・共感を大切に、押しつけがましくならないように
-・長文は避け、シンプルに
-・困っていそうなら管理者への相談を促す"""
+以下のルールを必ず守ってください：
+・返信は短く、1〜3文以内にまとめる
+・どんなにネガティブな内容でも、ポジティブで中立な視点で返す
+・共感を示しつつ、押しつけがましくならない
+・断定や否定はせず、当たり障りのない温かい言葉を選ぶ
+・絵文字は使わない"""
 )
 
-async def generate_reply(message_content: str, channel_name: str) -> str:
-    prompt = f"チャンネル「{channel_name}」に以下のメッセージが投稿されましたが、まだ誰も返信していません。温かく返信してください。\n\n「{message_content}」"
+async def generate_reply(message_content: str) -> str:
+    prompt = f"以下のメッセージに短く返信してください。\n\n「{message_content}」"
     response = model.generate_content(prompt)
     return response.text
 
@@ -40,6 +47,10 @@ async def check_unanswered_messages():
         threshold_time = datetime.now(timezone.utc) - timedelta(hours=REPLY_THRESHOLD_HOURS)
 
         for channel in guild.text_channels:
+            # 対象チャンネル以外はスキップ
+            if channel.id not in WATCH_CHANNEL_IDS:
+                continue
+
             try:
                 async for msg in channel.history(limit=50, after=threshold_time, oldest_first=True):
                     if msg.author.bot:
@@ -53,7 +64,7 @@ async def check_unanswered_messages():
 
                     if not has_reply and msg.content:
                         print(f"  未返信: #{channel.name} - {msg.author}: {msg.content[:50]}")
-                        reply_text = await generate_reply(msg.content, channel.name)
+                        reply_text = await generate_reply(msg.content)
                         await msg.reply(reply_text)
                         print(f"  → 返信しました")
                         await asyncio.sleep(2)
