@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands
 from groq import Groq
 import asyncio
 import os
@@ -9,10 +10,8 @@ import threading
 DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 GUILD_ID = int(os.environ["GUILD_ID"])
-CHECK_INTERVAL = 3600
-REPLY_THRESHOLD_HOURS = 24
 
-# 返信するチャンネルIDのリスト（追加したい場合はカンマ区切りで増やす）
+# 自動返信するチャンネルIDのリスト
 WATCH_CHANNEL_IDS = [
     1300764527109079071,
 ]
@@ -41,9 +40,14 @@ print("ヘルスチェックサーバー起動: port 8000")
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
+intents.messages = True
 
 client = discord.Client(intents=intents)
+tree = app_commands.CommandTree(client)
 groq_client = Groq(api_key=GROQ_API_KEY)
+
+# チャンネルごとの最新メッセージIDを管理
+latest_message: dict[int, int] = {}
 
 async def generate_reply(message_content: str) -> str:
     response = groq_client.chat.completions.create(
@@ -56,46 +60,48 @@ async def generate_reply(message_content: str) -> str:
     )
     return response.choices[0].message.content
 
-async def check_unanswered_messages():
-    await client.wait_until_ready()
-    guild = client.get_guild(GUILD_ID)
+async def delayed_reply(msg: discord.Message):
+    """1分待って、その間新しいメッセージがなければ返信する"""
+    await asyncio.sleep(60)
 
-    while not client.is_closed():
-        print(f"[{datetime.now()}] 未返信メッセージをチェック中...")
-        threshold_time = datetime.now(timezone.utc) - timedelta(hours=REPLY_THRESHOLD_HOURS)
+    # 1分後に最新メッセージが自分かどうか確認
+    if latest_message.get(msg.channel.id) == msg.id:
+        try:
+            print(f"  自動返信: #{msg.channel.name} - {msg.author}: {msg.content[:50]}")
+            reply_text = await generate_reply(msg.content)
+            await msg.reply(reply_text)
+            print(f"  → 返信しました")
+        except Exception as e:
+            print(f"エラー: {e}")
 
-        for channel in guild.text_channels:
-            if channel.id not in WATCH_CHANNEL_IDS:
-                continue
+@client.event
+async def on_message(msg: discord.Message):
+    if msg.author.bot:
+        return
 
-            try:
-                async for msg in channel.history(limit=50, after=threshold_time, oldest_first=True):
-                    if msg.author.bot:
-                        continue
+    # 自動返信対象チャンネルの場合
+    if msg.channel.id in WATCH_CHANNEL_IDS:
+        latest_message[msg.channel.id] = msg.id
+        asyncio.ensure_future(delayed_reply(msg))
 
-                    has_reply = False
-                    async for reply in channel.history(limit=20, after=msg):
-                        if reply.reference and reply.reference.message_id == msg.id:
-                            has_reply = True
-                            break
-
-                    if not has_reply and msg.content:
-                        print(f"  未返信: #{channel.name} - {msg.author}: {msg.content[:50]}")
-                        reply_text = await generate_reply(msg.content)
-                        await msg.reply(reply_text)
-                        print(f"  → 返信しました")
-                        await asyncio.sleep(5)
-
-            except discord.Forbidden:
-                continue
-            except Exception as e:
-                print(f"エラー: {e}")
-
-        await asyncio.sleep(CHECK_INTERVAL)
+# スラッシュコマンド /ai
+@tree.command(name="ai", description="てちょうAIに話しかける")
+@app_commands.describe(message="AIへのメッセージ")
+async def ai_command(interaction: discord.Interaction, message: str):
+    await interaction.response.defer()
+    try:
+        reply_text = await generate_reply(message)
+        await interaction.followup.send(f"{reply_text}")
+    except Exception as e:
+        await interaction.followup.send(f"エラーが発生しました: {e}")
 
 @client.event
 async def on_ready():
     print(f"Bot起動: {client.user}")
-    client.loop.create_task(check_unanswered_messages())
+    # スラッシュコマンドをサーバーに登録
+    guild = discord.Object(id=GUILD_ID)
+    tree.copy_global_to(guild=guild)
+    await tree.sync(guild=guild)
+    print("スラッシュコマンド登録完了")
 
 client.run(DISCORD_TOKEN)
