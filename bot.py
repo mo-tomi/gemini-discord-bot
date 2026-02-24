@@ -4,6 +4,8 @@ from google.genai import types
 import asyncio
 import os
 from datetime import datetime, timezone, timedelta
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
 
 DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
@@ -23,6 +25,19 @@ SYSTEM_PROMPT = """あなたは「手帳持ちの集い」というDiscordサー
 ・共感を示しつつ、押しつけがましくならない
 ・断定や否定はせず、当たり障りのない温かい言葉を選ぶ
 ・絵文字は使わない"""
+
+# Koyebのヘルスチェック用サーバー
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, format, *args):
+        pass  # ログを抑制
+
+def run_health_server():
+    server = HTTPServer(("0.0.0.0", 8000), HealthHandler)
+    server.serve_forever()
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -80,5 +95,9 @@ async def check_unanswered_messages():
 async def on_ready():
     print(f"Bot起動: {client.user}")
     client.loop.create_task(check_unanswered_messages())
+
+# ヘルスチェックサーバーをバックグラウンドで起動
+threading.Thread(target=run_health_server, daemon=True).start()
+print("ヘルスチェックサーバー起動: port 8000")
 
 client.run(DISCORD_TOKEN)
