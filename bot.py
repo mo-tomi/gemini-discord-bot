@@ -1,4 +1,4 @@
-import discord
+himport discord
 import google.generativeai as genai
 import asyncio
 import os
@@ -18,7 +18,7 @@ client = discord.Client(intents=intents)
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
+        model_name="gemini-2.0-flash",
     system_instruction="""あなたは「手帳持ちの集い」というDiscordサーバーのサポートBotです。
 障害者手帳を持つ方々のコミュニティで、温かく寄り添う返信をしてください。
 ・共感を大切に、押しつけがましくならないように
