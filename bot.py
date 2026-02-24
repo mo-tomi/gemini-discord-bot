@@ -13,7 +13,6 @@ GUILD_ID = int(os.environ["GUILD_ID"])
 CHECK_INTERVAL = 3600
 REPLY_THRESHOLD_HOURS = 24
 
-# 返信するチャンネルIDのリスト（追加したい場合はカンマ区切りで増やす）
 WATCH_CHANNEL_IDS = [
     1300764527109079071,
 ]
@@ -26,18 +25,18 @@ SYSTEM_PROMPT = """あなたは「手帳持ちの集い」というDiscordサー
 ・断定や否定はせず、当たり障りのない温かい言葉を選ぶ
 ・絵文字は使わない"""
 
-# Koyebのヘルスチェック用サーバー
+# ヘルスチェック用サーバー（先に起動する）
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"OK")
     def log_message(self, format, *args):
-        pass  # ログを抑制
+        pass
 
-def run_health_server():
-    server = HTTPServer(("0.0.0.0", 8000), HealthHandler)
-    server.serve_forever()
+health_server = HTTPServer(("0.0.0.0", 8000), HealthHandler)
+threading.Thread(target=health_server.serve_forever, daemon=True).start()
+print("ヘルスチェックサーバー起動: port 8000")
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -48,7 +47,7 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 async def generate_reply(message_content: str) -> str:
     response = gemini_client.models.generate_content(
-        model="gemini-2.0-flash",
+        model="gemini-1.5-flash",  # 無料枠が多いモデルに変更
         config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
         contents=f"以下のメッセージに短く返信してください。\n\n「{message_content}」"
     )
@@ -82,7 +81,7 @@ async def check_unanswered_messages():
                         reply_text = await generate_reply(msg.content)
                         await msg.reply(reply_text)
                         print(f"  → 返信しました")
-                        await asyncio.sleep(2)
+                        await asyncio.sleep(5)
 
             except discord.Forbidden:
                 continue
@@ -95,9 +94,5 @@ async def check_unanswered_messages():
 async def on_ready():
     print(f"Bot起動: {client.user}")
     client.loop.create_task(check_unanswered_messages())
-
-# ヘルスチェックサーバーをバックグラウンドで起動
-threading.Thread(target=run_health_server, daemon=True).start()
-print("ヘルスチェックサーバー起動: port 8000")
 
 client.run(DISCORD_TOKEN)
