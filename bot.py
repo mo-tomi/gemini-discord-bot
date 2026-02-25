@@ -48,13 +48,14 @@ deepseek_client = OpenAI(
     base_url="https://api.deepseek.com"
 )
 
-async def generate_reply(message_content: str) -> str:
+async def generate_reply(message_content: str, history: list = []) -> str:
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": f"以下のメッセージに短く返信してください。\n\n「{message_content}」"})
+
     response = deepseek_client.chat.completions.create(
         model="deepseek-chat",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"以下のメッセージに短く返信してください。\n\n「{message_content}」"}
-        ],
+        messages=messages,
         max_tokens=200,
     )
     return response.choices[0].message.content
@@ -64,8 +65,16 @@ pending_tasks: dict[int, asyncio.Task] = {}
 async def delayed_reply(msg: discord.Message):
     await asyncio.sleep(60)
     try:
+        # 直前5件のメッセージ履歴を取得
+        history = []
+        async for m in msg.channel.history(limit=6, before=msg):
+            if m.author == client.user:
+                history.insert(0, {"role": "assistant", "content": m.content})
+            elif not m.author.bot:
+                history.insert(0, {"role": "user", "content": m.content})
+
         print(f"  自動返信: #{msg.channel.name} - {msg.author}: {msg.content[:50]}")
-        reply_text = await generate_reply(msg.content)
+        reply_text = await generate_reply(msg.content, history)
         await msg.reply(reply_text)
         print(f"  → 返信しました")
     except asyncio.CancelledError:
