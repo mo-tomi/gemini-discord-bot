@@ -88,7 +88,7 @@ async def ai_command(interaction: discord.Interaction, message: str):
     await interaction.response.defer()
     try:
         reply_text = await generate_reply(message)
-        await interaction.followup.send(f"{reply_text}")
+        await interaction.followup.send(f"> {message}\n\n{reply_text}")
     except Exception as e:
         await interaction.followup.send(f"エラーが発生しました: {e}")
 
