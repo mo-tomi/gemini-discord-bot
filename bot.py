@@ -1,27 +1,55 @@
+"""
+てちょうAI - 手帳持ちの集い 統合サポートBOT
+=============================================
+機能:
+  1. AI自動返信 — 指定チャンネルの投稿に60秒後にDeepSeek AIが返信
+  2. /ai スラッシュコマンド — 直接AIに話しかける
+  3. ウェルカム案内 — 自己紹介チャンネルへの投稿を検知→やさしくチャンネル案内
+  4. 今日の話題 — 毎日定時に話題を投稿してスレッド作成
+  5. 共感リアクション — 感情キーワード検知→絵文字リアクション
+  6. キープアライブ — Koyeb用の自己pingでスリープ防止
+
+環境変数:
+  DISCORD_TOKEN    — Discord BOTトークン
+  DEEPSEEK_API_KEY — DeepSeek APIキー
+  GUILD_ID         — サーバーID
+  KOYEB_URL        — Koyebの公開URL（任意、キープアライブ用）
+"""
+
 import discord
 from discord import app_commands
 from openai import OpenAI
 import asyncio
 import os
+import json
+import random
+import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
+import urllib.request
 
+# ============================================================
+# 環境変数
+# ============================================================
 DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
 DEEPSEEK_API_KEY = os.environ["DEEPSEEK_API_KEY"]
 GUILD_ID = int(os.environ["GUILD_ID"])
+KOYEB_URL = os.environ.get("KOYEB_URL", "")
 
-WATCH_CHANNEL_IDS = [
-    1300764527109079071,
-]
+# ============================================================
+# config.json 読み込み
+# ============================================================
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
-SYSTEM_PROMPT = """あなたは「手帳持ちの集い」というDiscordサーバーのサポートBotです。
-以下のルールを必ず守ってください：
-・返信は短く、1〜3文以内にまとめる
-・どんなにネガティブな内容でも、ポジティブで中立な視点で返す
-・共感を示しつつ、押しつけがましくならない
-・断定や否定はせず、当たり障りのない温かい言葉を選ぶ
-・絵文字は使わない"""
+def load_config():
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
 
+config = load_config()
+
+# ============================================================
+# ヘルスチェックサーバー（Koyeb用 port 8000）
+# ============================================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -35,20 +63,38 @@ health_server = HTTPServer(("0.0.0.0", 8000), HealthHandler)
 threading.Thread(target=health_server.serve_forever, daemon=True).start()
 print("ヘルスチェックサーバー起動: port 8000")
 
+# ============================================================
+# Discord クライアント設定
+# ============================================================
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
 intents.messages = True
+intents.members = True
 
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
+# ============================================================
+# DeepSeek AI クライアント
+# ============================================================
+SYSTEM_PROMPT = """あなたは「手帳持ちの集い」というDiscordサーバーのサポートBotです。
+以下のルールを必ず守ってください：
+・返信は短く、1〜3文以内にまとめる
+・どんなにネガティブな内容でも、ポジティブで中立な視点で返す
+・共感を示しつつ、押しつけがましくならない
+・断定や否定はせず、当たり障りのない温かい言葉を選ぶ
+・絵文字は使わない"""
+
 deepseek_client = OpenAI(
-    api_key=os.environ["DEEPSEEK_API_KEY"],
+    api_key=DEEPSEEK_API_KEY,
     base_url="https://api.deepseek.com"
 )
 
-async def generate_reply(message_content: str, history: list = []) -> str:
+
+async def generate_reply(message_content: str, history: list = None) -> str:
+    if history is None:
+        history = []
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages.extend(history)
     messages.append({"role": "user", "content": f"以下のメッセージに短く返信してください。\n\n「{message_content}」"})
@@ -60,12 +106,20 @@ async def generate_reply(message_content: str, history: list = []) -> str:
     )
     return response.choices[0].message.content
 
+
+# ============================================================
+# 機能1: AI自動返信（既存機能）
+# ============================================================
+WATCH_CHANNEL_IDS = [
+    1300764527109079071,
+]
+
 pending_tasks: dict[int, asyncio.Task] = {}
+
 
 async def delayed_reply(msg: discord.Message):
     await asyncio.sleep(60)
     try:
-        # 直前5件のメッセージ履歴を取得
         history = []
         async for m in msg.channel.history(limit=6, before=msg):
             if m.author == client.user:
@@ -80,17 +134,12 @@ async def delayed_reply(msg: discord.Message):
     except asyncio.CancelledError:
         pass
     except Exception as e:
-        print(f"エラー: {e}")
+        print(f"自動返信エラー: {e}")
 
-@client.event
-async def on_message(msg: discord.Message):
-    if msg.author.bot:
-        return
-    if msg.channel.id in WATCH_CHANNEL_IDS:
-        if msg.channel.id in pending_tasks:
-            pending_tasks[msg.channel.id].cancel()
-        pending_tasks[msg.channel.id] = asyncio.ensure_future(delayed_reply(msg))
 
+# ============================================================
+# 機能2: /ai スラッシュコマンド（既存機能）
+# ============================================================
 @tree.command(name="ai", description="てちょうAIに話しかける")
 @app_commands.describe(message="AIへのメッセージ")
 async def ai_command(interaction: discord.Interaction, message: str):
@@ -101,12 +150,286 @@ async def ai_command(interaction: discord.Interaction, message: str):
     except Exception as e:
         await interaction.followup.send(f"エラーが発生しました: {e}")
 
+
+# ============================================================
+# 機能3: ウェルカム案内
+# ============================================================
+welcome_cfg = config.get("welcome", {})
+WELCOME_ENABLED = welcome_cfg.get("enabled", False)
+WELCOME_CHANNEL_ID = welcome_cfg.get("watch_channel_id")
+WELCOME_MSG_TEMPLATE = welcome_cfg.get("message", "ようこそ！")
+WELCOME_CHAT_CH = welcome_cfg.get("chat_channel_id")
+WELCOME_WORRY_CH = welcome_cfg.get("worry_channel_id")
+WELCOME_VC_CH = welcome_cfg.get("vc_channel_id")
+
+
+async def handle_welcome(msg: discord.Message):
+    """自己紹介チャンネルへの投稿を検知して案内メッセージを送る"""
+    if not WELCOME_ENABLED or WELCOME_CHANNEL_ID is None:
+        return
+    if msg.channel.id != WELCOME_CHANNEL_ID:
+        return
+
+    await asyncio.sleep(random.uniform(3, 8))
+
+    try:
+        welcome_text = WELCOME_MSG_TEMPLATE.replace("{username}", msg.author.display_name)
+        welcome_text = welcome_text.replace("{chat_channel}", str(WELCOME_CHAT_CH or "雑談"))
+        welcome_text = welcome_text.replace("{worry_channel}", str(WELCOME_WORRY_CH or "悩み相談"))
+        welcome_text = welcome_text.replace("{vc_channel}", str(WELCOME_VC_CH or "VC"))
+        await msg.reply(welcome_text, mention_author=False)
+        print(f"  ウェルカム送信: {msg.author.display_name}")
+    except Exception as e:
+        print(f"ウェルカムエラー: {e}")
+
+
+# ============================================================
+# 機能4: 今日の話題
+# ============================================================
+topic_cfg = config.get("daily_topic", {})
+TOPIC_ENABLED = topic_cfg.get("enabled", False)
+TOPIC_CHANNEL_ID = topic_cfg.get("channel_id")
+TOPIC_HOUR = topic_cfg.get("hour", 12)
+TOPIC_MINUTE = topic_cfg.get("minute", 0)
+TOPICS = topic_cfg.get("topics", [])
+
+topic_posted_today = False
+used_topic_indices = []
+
+
+async def daily_topic_loop():
+    """毎分チェックして、指定時刻に今日の話題を投稿"""
+    global topic_posted_today, used_topic_indices
+
+    await client.wait_until_ready()
+
+    if not TOPIC_ENABLED or TOPIC_CHANNEL_ID is None:
+        print("今日の話題: 無効（チャンネル未設定）")
+        return
+
+    print(f"今日の話題: 有効（毎日 {TOPIC_HOUR}:{TOPIC_MINUTE:02d} JST に投稿）")
+
+    while not client.is_closed():
+        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))  # JST
+
+        # 日付が変わったらリセット
+        if now.hour == 0 and now.minute == 0:
+            topic_posted_today = False
+
+        # 投稿時刻チェック
+        if (now.hour == TOPIC_HOUR and now.minute == TOPIC_MINUTE
+                and not topic_posted_today and TOPICS):
+            topic_posted_today = True
+
+            # トピック選択（全部使い切ったらリセット）
+            available = [i for i in range(len(TOPICS)) if i not in used_topic_indices]
+            if not available:
+                used_topic_indices.clear()
+                available = list(range(len(TOPICS)))
+
+            idx = random.choice(available)
+            used_topic_indices.append(idx)
+            topic = TOPICS[idx]
+
+            try:
+                channel = client.get_channel(TOPIC_CHANNEL_ID)
+                if channel:
+                    today_str = now.strftime("%m/%d")
+
+                    embed = discord.Embed(
+                        title="📒 今日の話題",
+                        description=topic,
+                        color=0x5865F2,
+                    )
+                    embed.set_footer(text="答えなくても読むだけでもOKです 🌱")
+
+                    sent_msg = await channel.send(embed=embed)
+                    await sent_msg.create_thread(
+                        name=f"今日の話題 - {today_str}",
+                        auto_archive_duration=1440
+                    )
+                    print(f"  今日の話題投稿: {topic[:30]}")
+            except Exception as e:
+                print(f"今日の話題エラー: {e}")
+
+        await asyncio.sleep(60)
+
+
+# ============================================================
+# 機能5: 共感リアクション
+# ============================================================
+empathy_cfg = config.get("empathy_reaction", {})
+EMPATHY_ENABLED = empathy_cfg.get("enabled", False)
+EMPATHY_CHANNEL_IDS = empathy_cfg.get("watch_channel_ids", [])
+REACTIONS = empathy_cfg.get("reactions", {})
+POSITIVE_KW = empathy_cfg.get("positive_keywords", [])
+SUPPORT_KW = empathy_cfg.get("support_keywords", [])
+EMPATHY_KW = empathy_cfg.get("empathy_keywords", [])
+
+
+async def handle_empathy_reaction(msg: discord.Message):
+    """メッセージ内のキーワードを検知してリアクションを付ける"""
+    if not EMPATHY_ENABLED:
+        return
+
+    # watch_channel_ids が空なら全チャンネル対象
+    if EMPATHY_CHANNEL_IDS and msg.channel.id not in EMPATHY_CHANNEL_IDS:
+        return
+
+    content = msg.content
+    if len(content) < 5:
+        return
+
+    matched_category = None
+
+    # つらい・しんどいメッセージ（最優先）
+    for kw in SUPPORT_KW:
+        if kw in content:
+            matched_category = "support"
+            break
+
+    # ポジティブなメッセージ
+    if not matched_category:
+        for kw in POSITIVE_KW:
+            if kw in content:
+                matched_category = "positive"
+                break
+
+    # 共感系メッセージ
+    if not matched_category:
+        for kw in EMPATHY_KW:
+            if kw in content:
+                matched_category = "empathy"
+                break
+
+    if matched_category and matched_category in REACTIONS:
+        await asyncio.sleep(random.uniform(5, 30))
+        try:
+            emoji = random.choice(REACTIONS[matched_category])
+            await msg.add_reaction(emoji)
+            print(f"  共感リアクション: {matched_category} → {emoji} ({msg.content[:30]})")
+        except Exception:
+            pass
+
+
+# ============================================================
+# 機能6: キープアライブ（Koyebスリープ防止）
+# ============================================================
+async def keepalive_loop():
+    """5分ごとに自分自身にHTTPリクエストを送ってスリープ防止"""
+    await client.wait_until_ready()
+
+    if not KOYEB_URL:
+        print("キープアライブ: 無効（KOYEB_URL未設定）")
+        return
+
+    print(f"キープアライブ: 有効（{KOYEB_URL}）")
+
+    while not client.is_closed():
+        try:
+            urllib.request.urlopen(KOYEB_URL, timeout=10)
+        except Exception:
+            pass
+        await asyncio.sleep(300)  # 5分間隔
+
+
+# ============================================================
+# イベントハンドラ
+# ============================================================
 @client.event
 async def on_ready():
     print(f"Bot起動: {client.user}")
+    print(f"サーバー: {GUILD_ID}")
+    print("─" * 40)
+    print(f"  AI自動返信: {len(WATCH_CHANNEL_IDS)}チャンネル監視中")
+    print(f"  ウェルカム: {'ON' if WELCOME_ENABLED and WELCOME_CHANNEL_ID else 'OFF'}")
+    print(f"  今日の話題: {'ON' if TOPIC_ENABLED and TOPIC_CHANNEL_ID else 'OFF'}")
+    print(f"  共感リアクション: {'ON' if EMPATHY_ENABLED else 'OFF'}")
+    print(f"  キープアライブ: {'ON' if KOYEB_URL else 'OFF'}")
+    print("─" * 40)
+
     guild = discord.Object(id=GUILD_ID)
     tree.copy_global_to(guild=guild)
     await tree.sync(guild=guild)
     print("スラッシュコマンド登録完了")
 
+    # バックグラウンドタスク開始
+    client.loop.create_task(daily_topic_loop())
+    client.loop.create_task(keepalive_loop())
+
+
+@client.event
+async def on_message(msg: discord.Message):
+    if msg.author.bot:
+        return
+
+    # AI自動返信
+    if msg.channel.id in WATCH_CHANNEL_IDS:
+        if msg.channel.id in pending_tasks:
+            pending_tasks[msg.channel.id].cancel()
+        pending_tasks[msg.channel.id] = asyncio.ensure_future(delayed_reply(msg))
+
+    # ウェルカム案内
+    await handle_welcome(msg)
+
+    # 共感リアクション
+    await handle_empathy_reaction(msg)
+
+
+# ============================================================
+# スラッシュ管理コマンド
+# ============================================================
+@tree.command(name="topic", description="今日の話題を手動で投稿する")
+async def manual_topic(interaction: discord.Interaction):
+    if not TOPICS:
+        await interaction.response.send_message("話題リストが空です", ephemeral=True)
+        return
+
+    topic = random.choice(TOPICS)
+    now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
+    today_str = now.strftime("%m/%d")
+
+    embed = discord.Embed(
+        title="📒 今日の話題",
+        description=topic,
+        color=0x5865F2,
+    )
+    embed.set_footer(text="答えなくても読むだけでもOKです 🌱")
+
+    await interaction.response.send_message(embed=embed)
+    sent_msg = await interaction.original_response()
+    try:
+        await sent_msg.create_thread(
+            name=f"今日の話題 - {today_str}",
+            auto_archive_duration=1440
+        )
+    except Exception:
+        pass
+
+
+@tree.command(name="status", description="てちょうAIのステータスを表示")
+async def status_command(interaction: discord.Interaction):
+    now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
+    uptime = now.strftime("%Y/%m/%d %H:%M JST")
+
+    embed = discord.Embed(title="📒 てちょうAI ステータス", color=0x5865F2)
+    embed.add_field(name="現在時刻", value=uptime, inline=False)
+    embed.add_field(name="AI自動返信", value=f"{len(WATCH_CHANNEL_IDS)}ch監視中", inline=True)
+    embed.add_field(name="ウェルカム", value="ON" if WELCOME_ENABLED and WELCOME_CHANNEL_ID else "OFF", inline=True)
+    embed.add_field(name="今日の話題", value="ON" if TOPIC_ENABLED and TOPIC_CHANNEL_ID else "OFF", inline=True)
+    embed.add_field(name="共感リアクション", value="ON" if EMPATHY_ENABLED else "OFF", inline=True)
+    embed.add_field(name="キープアライブ", value="ON" if KOYEB_URL else "OFF", inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tree.command(name="reload", description="設定ファイルを再読み込みする")
+async def reload_command(interaction: discord.Interaction):
+    global config
+    config = load_config()
+    await interaction.response.send_message("設定を再読み込みしました", ephemeral=True)
+
+
+# ============================================================
+# BOT起動
+# ============================================================
 client.run(DISCORD_TOKEN)
