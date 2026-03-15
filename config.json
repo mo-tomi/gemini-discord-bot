@@ -1,11 +1,8 @@
 {
   "welcome": {
     "enabled": true,
-    "watch_channel_id": null,
-    "message": "**ようこそ、{username} さん！** 📒\n\n自己紹介ありがとうございます。\nよかったら気になるチャンネルをのぞいてみてくださいね。\n\n> ☕ <#{chat_channel}> — 気軽に雑談できる場所\n> ❓ <#{worry_channel}> — 悩みを共有できる掲示板\n> 📞 <#{vc_channel}> — 通話したいときはこちら\n\n無理せず、自分のペースで大丈夫です 🌱",
-    "chat_channel_id": null,
-    "worry_channel_id": null,
-    "vc_channel_id": null
+    "watch_channel_id": 1337037662326099998,
+    "message": "**ようこそ、{username} さん！** 📒\n\nまずはこのチャンネルであいさつしてみてくださいね。\n無理せず、自分のペースで大丈夫です 🌱"
   },
 
   "daily_topic": {
